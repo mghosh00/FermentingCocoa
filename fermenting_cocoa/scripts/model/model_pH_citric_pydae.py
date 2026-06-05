@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import sympy as sym
 from pydae.core import Builder, Model
+import io
+import contextlib
 plt.rcParams['text.usetex'] = True
 
 trial = "initial"
@@ -48,7 +50,9 @@ def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     return mu_pH
 
 
-def H_RHS(_H, _Cit, _Ac, _LA, params):
+def pH_RHS(_pH, _Cit, _Ac, _LA, params):
+
+    _H = pow(10, -_pH)
 
     K_w, _Cat = params["K_w"], params["Cat"]
     M_Cit, K_a1_cit, K_a2_cit, K_a3_cit = params["M_Cit"], params["K_a1_Cit"], params["K_a2_Cit"], params["K_a3_Cit"]
@@ -72,16 +76,22 @@ def setup_system(params):
     including M1-M5, O2 dynamics and Temperature dynamics.
     """
 
-    # States (note we include a dummy time variable tau)
-    tau, Glc, Fru, Cit, EtOH, LA, Ac, Y, LAB, AAB, O2, T = sym.symbols("tau,Glc,Fru,Cit,EtOH,"
-                                                                       "LA,Ac,Y,LAB,AAB,O2,T", real=True)
+    # Nondimensional states (note we include a dummy time variable tau)
+    tau_nd, Glc_nd, Fru_nd, Cit_nd, EtOH_nd, LA_nd = sym.symbols("tau,Glc,Fru,Cit,EtOH,LA", real=True)
+    Ac_nd, Y_nd, LAB_nd, AAB_nd, O2_nd, T_nd = sym.symbols("Ac,Y,LAB,AAB,O2,T", real=True)
+
+    # Dimensional states (to be inserted into equations)
+    tau, Glc, Fru = tau_nd * params["tau_sc"], Glc_nd * params["Glc_sc"], Fru_nd * params["Fru_sc"]
+    Cit, EtOH, LA = Cit_nd * params["Cit_sc"], EtOH_nd * params["EtOH_sc"], LA_nd * params["LA_sc"]
+    Ac, Y, LAB = Ac_nd * params["Ac_sc"], Y_nd * params["Y_sc"], LAB_nd * params["LAB_sc"]
+    AAB, O2, T = AAB_nd * params["AAB_sc"], O2_nd * params["O2_sc"], T_nd * params["T_sc"]
 
     # Algebraic unknowns
-    H, pH = sym.symbols("H,pH", real=True)
+    pH_nd = sym.symbols("pH", real=True)
+    pH = pH_nd * params["pH_sc"]
 
     # Algebraic equations
-    g_1 = H_RHS(H, Cit, Ac, LA, params)
-    g_2 = H - pow(10, -pH)
+    g_1 = pH_RHS(pH, Cit, Ac, LA, params)
 
     # Setting up differential equations
 
@@ -149,24 +159,25 @@ def setup_system(params):
     d3 = rate_d3 * Ac
 
     # ODEs
-    dtau = 1
-    dGlc = - params['Y_Glc_Y'] * v1 - params['Y_Glc_LAB'] * v3
-    dFru = - params['Y_Fru_Y'] * v2 - params['Y_Fru_LAB'] * v9
-    dCit = - params['Y_Cit_LAB'] * v12
+    dtau = 1 / params['tau_sc']
+    dGlc = (- params['Y_Glc_Y'] * v1 - params['Y_Glc_LAB'] * v3) / params['Glc_sc']
+    dFru = (- params['Y_Fru_Y'] * v2 - params['Y_Fru_LAB'] * v9) / params['Fru_sc']
+    dCit = (- params['Y_Cit_LAB'] * v12) / params['Cit_sc']
     dEtOH = (params['Y_EtOH_Y_Glc'] * v1 + params['Y_EtOH_Y_Fru'] * v2 +
              params['Y_EtOH_LAB_Glc'] * v3 + params['Y_EtOH_LAB_Fru'] * v9 +
-             params['Y_EtOH_Y_LA'] * v10 - params['Y_EtOH_AAB'] * v4 - d1)
+             params['Y_EtOH_Y_LA'] * v10 - params['Y_EtOH_AAB'] * v4 - d1) / params['EtOH_sc']
     dLA = (params['Y_LA_LAB_Glc'] * v3 + params['Y_LA_LAB_Fru'] * v9 +
-           params['Y_LA_LAB_Cit'] * v12 - params['Y_LA_AAB'] * v5 - params['Y_LA_Y'] * v10 - d2)
+           params['Y_LA_LAB_Cit'] * v12 - params['Y_LA_AAB'] * v5 - params['Y_LA_Y'] * v10 - d2) / params['LA_sc']
     dAc = (params['Y_Ac_LAB_Glc'] * v3 + params['Y_Ac_LAB_Fru'] * v9 +
            params['Y_Ac_AAB_EtOH'] * v4 + params['Y_Ac_AAB_LA'] * v5 +
            params['Y_Ac_Y_Glc'] * v1 + params['Y_Ac_Y_Fru'] * v2 +
-           params['Y_Ac_LAB_Cit'] * v12 - params['Y_Ac_AAB'] * v11 - d3)
-    dY = v1 + v2 + v10 - v6
-    dLAB = v3 + v9 + v12 - v7
-    dAAB = v4 + v5 + v11 - v8
+           params['Y_Ac_LAB_Cit'] * v12 - params['Y_Ac_AAB'] * v11 - d3) / params['Ac_sc']
+    dY = (v1 + v2 + v10 - v6) / params['Y_sc']
+    dLAB = (v3 + v9 + v12 - v7) / params['LAB_sc']
+    dAAB = (v4 + v5 + v11 - v8) / params['AAB_sc']
 
-    dO2 = (params['A_max'] / (1 + sym.exp(-(tau - params['t_aer'])))) * (params['C_air'] - O2) - v4 - v5 - v11
+    dO2 = ((params['A_max'] / (1 + sym.exp(-(tau - params['t_aer'])))) * (params['C_air'] - O2)
+           - v4 - v5 - v11) / params['O2_sc']
 
     T_e_range = params['T_e_max'] - params['T_e_min']
     T_e = T_e_range / 2 * sym.cos(sym.pi * tau / 12) + (params['T_e_max'] - T_e_range / 2)
@@ -177,32 +188,39 @@ def setup_system(params):
             params['Y_Q_EtOH'] * (params['Y_EtOH_AAB'] * v4) +
             params['Y_Q_LA'] * (params['Y_LA_AAB'] * v5) -
             params['Q_L'] * (T - T_e)
-    )
-    _x_list = [tau, Glc, Fru, Cit, EtOH, LA, Ac, Y, LAB, AAB, O2, T]
+    ) / params['T_sc']
+    # Solve for the nondimensional states
+    _x_list = [tau_nd, Glc_nd, Fru_nd, Cit_nd, EtOH_nd, LA_nd, Ac_nd, Y_nd, LAB_nd, AAB_nd, O2_nd, T_nd]
     _f_list = [dtau, dGlc, dFru, dCit, dEtOH, dLA, dAc, dY, dLAB, dAAB, dO2, dT]
-    _g_list = [g_1, g_2]
-    _y_ini_list = [H, pH]
-    _y_run_list = [H, pH]
+    _g_list = [g_1]
+    _y_ini_list = [pH_nd]
+    _y_run_list = [pH_nd]
 
     return _x_list, _f_list, _g_list, _y_ini_list, _y_run_list
 
 
-def run_model_pH_citric(params, initial_conditions, t_end):
-    x_list, f_list, g_list, y_ini_list, y_run_list = setup_system(params)
+def build_model_pH_citric(params):
+    sym_params = {k: sym.Symbol(k, real=True) for k in params.keys()}
+    x_list, f_list, g_list, y_ini_list, y_run_list = setup_system(sym_params)
 
     u_ini_dict = {}
     u_run_dict, h_dict = {}, {}
 
     # pydae solver
-    sys_dict = {"name": "fermenting_pulp", "params_dict": {}, "f_list": f_list, "g_list": g_list, "x_list": x_list,
+    sys_dict = {"name": "fermenting_pulp", "params_dict": params, "f_list": f_list, "g_list": g_list, "x_list": x_list,
                 "y_ini_list": y_ini_list, "y_run_list": y_run_list, "u_ini_dict": u_ini_dict,
                 "u_run_dict": u_run_dict, "h_dict": h_dict}
     Builder(sys_dict, target="ctypes", sparse=False).build()
 
     # Initialise model
-    model = Model("fermenting_pulp")
+    return Model("fermenting_pulp")
+
+
+def run_model_pH_citric(model, params, initial_conditions, t_end, verbose):
     model.decimation = 10
-    model.ini(u_ini_dict, xy_0=initial_conditions)
+    with contextlib.redirect_stdout(io.StringIO()):
+        model.ini(params, xy_0=initial_conditions)
+    # model.ini(params, xy_0=initial_conditions)
 
     # Run model
     model.run(t_end, {})

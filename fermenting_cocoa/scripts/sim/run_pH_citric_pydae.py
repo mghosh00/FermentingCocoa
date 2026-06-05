@@ -1,8 +1,10 @@
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 from fermenting_cocoa.scripts import run_model_pH_citric
+from fermenting_cocoa.scripts.model.model_pH_citric_pydae import build_model_pH_citric
 
 plt.rcParams['text.usetex'] = True
 
@@ -52,8 +54,15 @@ params_json = json.load(param_file)
 params = flatten_json(params_json)
 
 initial_conditions = params_json["initial_conditions"]
-initial_conditions["H"] = 10 ** (-initial_conditions["pH"])
+
+# These scales are roughly the maximum sizes for each species. The solver uses
+# nondimensional quantities, as these are easier to use Bayesian inference with
+scales = params_json["scales"]
 short_labels = list(initial_conditions.keys())[1:]
+
+# Scaling initial conditions
+initial_conditions_nd = {k: initial_conditions[k] / scales[f"{k}_sc"]
+                         for k in initial_conditions.keys()}
 
 # Cation concentration in pulp (not including H+). We treat this as a constant.
 Cat_0 = calculate_Cat(params['pH_initial'], params['K_w'], initial_conditions['Cit'], params['M_Cit'],
@@ -64,7 +73,13 @@ params['Cat'] = Cat_0
 t_end = 168
 
 # Run model
-model = run_model_pH_citric(params, initial_conditions, t_end)
+model = build_model_pH_citric(params)
+start = time.time()
+for i in range(1000):
+    verbose = i % 10 == 0
+    model = run_model_pH_citric(model, params, initial_conditions_nd, t_end, verbose=verbose)
+    if verbose:
+        print(f"It {i}: {time.time() - start}")
 
 # Plotting the Results
 nrows, ncols = 4, 3
@@ -78,7 +93,7 @@ colors = ['blue', 'orange', 'darkgoldenrod', 'green', 'red', 'purple',
           'brown', 'pink', 'gray', 'cyan', 'black', 'darkviolet']
 
 times = np.linspace(0, t_end, t_end + 1)
-q_hourly = lambda symbol: np.interp(times, model.Time, model.get_values(symbol))
+q_hourly = lambda symbol: np.interp(times, model.Time, model.get_values(symbol)) * scales[f"{symbol}_sc"]
 
 # Calculating ambient temperature
 T_e_range = params['T_e_max'] - params['T_e_min']
