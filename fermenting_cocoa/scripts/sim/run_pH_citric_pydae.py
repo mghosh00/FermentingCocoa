@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import time
 
 from fermenting_cocoa.scripts import run_model_pH_citric
-from fermenting_cocoa.scripts.model.model_pH_citric_pydae import build_model_pH_citric
+from fermenting_cocoa.scripts import build_model_pH_citric
 
 plt.rcParams['text.usetex'] = True
 
