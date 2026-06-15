@@ -50,6 +50,19 @@ def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     return mu_pH
 
 
+def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
+    """
+    Calculates the concentration of cations (K+, Na+, etc.) at the beginning of the simulation
+    given the initial pH and initial citric acid concentration in the solution.
+    """
+    H = pow(10, -pH)
+    term1 = K_w / H - H
+    term2a = K_a1_cit * H ** 2 + 2 * K_a1_cit * K_a2_cit * H + 3 * K_a1_cit * K_a2_cit * K_a3_cit
+    term2b = H ** 3 + K_a1_cit * H ** 2 + K_a1_cit * K_a2_cit * H + K_a1_cit * K_a2_cit * K_a3_cit
+    Cat = term1 + (Cit / M_cit) * term2a / term2b
+    return Cat
+
+
 def pH_RHS(_pH, _Cit, _Ac, _LA, params):
 
     _H = pow(10, -_pH)
@@ -200,6 +213,10 @@ def setup_system(params):
 
 
 def build_model_pH_citric(params):
+    # Cation concentration (can be found from initial conditions on pH and Cit)
+    params["Cat"] = calculate_Cat(params['pH_initial'], params['K_w'],
+                                  params['Cit'], params['M_Cit'], params['K_a1_Cit'],
+                                  params['K_a2_Cit'], params['K_a3_Cit'])
     sym_params = {k: sym.Symbol(k, real=True) for k in params.keys()}
     x_list, f_list, g_list, y_ini_list, y_run_list = setup_system(sym_params)
 

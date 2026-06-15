@@ -26,19 +26,6 @@ trial = "initial"
 # mu_max_AAB_EtOH, Y_EtOH_Y_LA, Y_LA_Y, Y_Ac_AAB, t_aer
 
 
-def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
-    """
-    Calculates the concentration of cations (K+, Na+, etc.) at the beginning of the simulation
-    given the initial pH and initial citric acid concentration in the solution.
-    """
-    H = pow(10, -pH)
-    term1 = K_w / H - H
-    term2a = K_a1_cit * H ** 2 + 2 * K_a1_cit * K_a2_cit * H + 3 * K_a1_cit * K_a2_cit * K_a3_cit
-    term2b = H ** 3 + K_a1_cit * H ** 2 + K_a1_cit * K_a2_cit * H + K_a1_cit * K_a2_cit * K_a3_cit
-    Cat = term1 + (Cit / M_cit) * term2a / term2b
-    return Cat
-
-
 def flatten_json(data):
     items = {}
     for k, v in data.items():
@@ -64,11 +51,26 @@ short_labels = list(initial_conditions.keys())[1:]
 initial_conditions_nd = {k: initial_conditions[k] / scales[f"{k}_sc"]
                          for k in initial_conditions.keys()}
 
+
+def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
+    """
+    Calculates the concentration of cations (K+, Na+, etc.) at the beginning of the simulation
+    given the initial pH and initial citric acid concentration in the solution.
+    """
+    H = pow(10, -pH)
+    term1 = K_w / H - H
+    term2a = K_a1_cit * H ** 2 + 2 * K_a1_cit * K_a2_cit * H + 3 * K_a1_cit * K_a2_cit * K_a3_cit
+    term2b = H ** 3 + K_a1_cit * H ** 2 + K_a1_cit * K_a2_cit * H + K_a1_cit * K_a2_cit * K_a3_cit
+    Cat = term1 + (Cit / M_cit) * term2a / term2b
+    return Cat
+
+
 # Cation concentration in pulp (not including H+). We treat this as a constant.
 Cat_0 = calculate_Cat(params['pH_initial'], params['K_w'], initial_conditions['Cit'], params['M_Cit'],
                       params['K_a1_Cit'], params['K_a2_Cit'], params['K_a3_Cit'])
 # Cat_0 = 0.05
 params['Cat'] = Cat_0
+print("Cat_0: ", Cat_0)
 
 t_end = 168
 
