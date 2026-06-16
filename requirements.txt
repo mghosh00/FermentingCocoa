@@ -7,4 +7,6 @@ Pillow~=10.1.0
 pydae~=1.2.1
 sympy~=1.14.0
 jupyter
+notebook
 casadi~=3.7.2
+SALib
