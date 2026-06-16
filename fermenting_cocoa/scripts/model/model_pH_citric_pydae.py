@@ -99,6 +99,10 @@ def setup_system(params):
     Ac, Y, LAB = Ac_nd * params["Ac_sc"], Y_nd * params["Y_sc"], LAB_nd * params["LAB_sc"]
     AAB, O2, T = AAB_nd * params["AAB_sc"], O2_nd * params["O2_sc"], T_nd * params["T_sc"]
 
+    # To prevent concentrations going below zero
+    Glc = sym.Max(Glc, 0.0)
+    O2 = sym.Max(O2, 0.0)
+
     # Algebraic unknowns
     pH_nd = sym.symbols("pH", real=True)
     pH = pH_nd * params["pH_sc"]
@@ -233,7 +237,17 @@ def build_model_pH_citric(params):
     return Model("fermenting_pulp")
 
 
-def run_model_pH_citric(model, params, initial_conditions, t_end, verbose):
+def run_model_pH_citric(model, params, initial_conditions, t_end, Dt=1e-2):
+    """Runs the model after building.
+
+    :param model: The pydae model.
+    :param params: Parameters on a standard scale.
+    :param initial_conditions: The initial conditions for the system.
+    :param t_end: The final timepoint.
+    :param Dt: The timestep the solver uses.
+    :return: The underlying model.
+    """
+    model.Dt = Dt
     model.decimation = 10
     with contextlib.redirect_stdout(io.StringIO()):
         model.ini(params, xy_0=initial_conditions)
