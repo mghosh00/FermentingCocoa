@@ -1,8 +1,9 @@
 import json
 import numpy as np
+import scipy.integrate as si
+from numba import njit, types
+from numba.typed import Dict
 import matplotlib.pyplot as plt
-import sympy as sym
-from pydae.core import Builder, Model
 import io
 import contextlib
 plt.rcParams['text.usetex'] = True
@@ -10,6 +11,7 @@ plt.rcParams['text.usetex'] = True
 trial = "initial"
 
 
+@njit(nopython=True)
 def calculate_mu_T(T, mu_opt, T_min, T_opt, T_max):
     """
     Calculates the temperature-adjusted specific growth rate using the
@@ -22,15 +24,12 @@ def calculate_mu_T(T, mu_opt, T_min, T_opt, T_max):
     term2 = (T_opt - T_max) * (T_opt + T_min - 2 * T)
     denominator = (T_opt - T_min) * (term1 - term2)
 
-    mu_T = sym.Piecewise(
-        (0.0, T < T_min),
-        (0.0, T > T_max),
-        (mu_opt * numerator / denominator, True)
-    )
+    mu_T = 0.0 if T < T_min else 0.0 if T > T_max else mu_opt * numerator / denominator
 
     return mu_T
 
 
+@njit(nopython=True)
 def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     """
     Calculates the effect pH has on the reaction rate using the cardinal
@@ -41,15 +40,11 @@ def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     term2 = (pH - pH_opt) ** 2
     denominator = term1 - term2
 
-    mu_pH = sym.Piecewise(
-        (0.0, pH < pH_min),
-        (0.0, pH > pH_max),
-        (numerator / denominator, True)
-    )
-
+    mu_pH = 0.0 if pH < pH_min else 0.0 if pH > pH_max else numerator / denominator
     return mu_pH
 
 
+@njit(nopython=True)
 def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
     """
     Calculates the concentration of cations (K+, Na+, etc.) at the beginning of the simulation
@@ -63,6 +58,7 @@ def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
     return Cat
 
 
+@njit(nopython=True)
 def pH_RHS(_pH, _Cit, _Ac, _LA, params):
 
     _H = pow(10, -_pH)
@@ -83,32 +79,63 @@ def pH_RHS(_pH, _Cit, _Ac, _LA, params):
     return eq
 
 
-def setup_system(params):
+@njit(nopython=True)
+def dCat_dt(params):
+    """The derivative of the concentration of cations as a function of time.
+    """
+    return 0.0
+
+
+@njit(nopython=True)
+def H_numerator(_H, _dCit, _dAc, _dLA, _params):
+    Cit_sc, Ac_sc, LA_sc = _params["Cit_sc"], _params["Ac_sc"], _params["LA_sc"]
+    M_Cit, K_a1_cit, K_a2_cit, K_a3_cit = _params["M_Cit"], _params["K_a1_Cit"], _params["K_a2_Cit"], _params["K_a3_Cit"]
+    M_Ac, K_a_Ac = _params["M_Ac"], _params["K_a_Ac"]
+    M_LA, K_a_LA = _params["M_LA"], _params["K_a_LA"]
+    term1 = -dCat_dt(_params)
+    term2 = (_dCit * Cit_sc / M_Cit * (K_a1_cit * _H ** 2 + 2 * K_a1_cit * K_a2_cit * _H + 3 * K_a1_cit * K_a2_cit * K_a3_cit) /
+             (_H ** 3 + K_a1_cit * _H ** 2 + K_a1_cit * K_a2_cit * _H + K_a1_cit * K_a2_cit * K_a3_cit))
+    term3 = _dAc * Ac_sc / M_Ac * K_a_Ac / (_H + K_a_Ac)
+    term4 = _dLA * LA_sc / M_LA * K_a_LA / (_H + K_a_LA)
+    return term1 + term2 + term3 + term4
+
+
+@njit(nopython=True)
+def H_denominator(_H, _Cit, _Ac, _LA, _params):
+    K_w = _params["K_w"]
+    M_Cit, K_a1_cit, K_a2_cit, K_a3_cit = _params["M_Cit"], _params["K_a1_Cit"], _params["K_a2_Cit"], _params["K_a3_Cit"]
+    M_Ac, K_a_Ac = _params["M_Ac"], _params["K_a_Ac"]
+    M_LA, K_a_LA = _params["M_LA"], _params["K_a_LA"]
+    term1 = 1 + K_w / _H ** 2
+    term2 = (_Cit / M_Cit * K_a1_cit *
+             (_H ** 4 + 4 * K_a2_cit * _H ** 3 + (K_a1_cit + 9 * K_a3_cit) * K_a2_cit * _H ** 2 +
+              4 * K_a1_cit * K_a2_cit * K_a3_cit * _H + K_a1_cit * K_a2_cit ** 2 * K_a3_cit) /
+             (_H ** 3 + K_a1_cit * _H ** 2 + K_a1_cit * K_a2_cit * _H + K_a1_cit * K_a2_cit * K_a3_cit) ** 2)
+    term3 = _Ac * K_a_Ac / M_Ac / (_H + K_a_Ac) ** 2
+    term4 = _LA * K_a_LA / M_LA / (_H + K_a_LA) ** 2
+    return term1 + term2 + term3 + term4
+
+
+@njit(nopython=True)
+def system(t, states, params):
     """
     Computes the derivatives for the FULL cocoa bean fermentation model,
     including M1-M5, O2 dynamics and Temperature dynamics.
     """
 
-    # Nondimensional states (note we include a dummy time variable tau)
-    tau_nd, Glc_nd, Fru_nd, Cit_nd, EtOH_nd, LA_nd = sym.symbols("tau,Glc,Fru,Cit,EtOH,LA", real=True)
-    Ac_nd, Y_nd, LAB_nd, AAB_nd, O2_nd, T_nd = sym.symbols("Ac,Y,LAB,AAB,O2,T", real=True)
+    # Nondimensional states
+    Glc_nd, Fru_nd, Cit_nd, EtOH_nd, LA_nd, Ac_nd, Y_nd, LAB_nd, AAB_nd, O2_nd, T_nd, pH_nd = states
 
     # Dimensional states (to be inserted into equations)
-    tau, Glc, Fru = tau_nd * params["tau_sc"], Glc_nd * params["Glc_sc"], Fru_nd * params["Fru_sc"]
+    Glc, Fru = Glc_nd * params["Glc_sc"], Fru_nd * params["Fru_sc"]
     Cit, EtOH, LA = Cit_nd * params["Cit_sc"], EtOH_nd * params["EtOH_sc"], LA_nd * params["LA_sc"]
     Ac, Y, LAB = Ac_nd * params["Ac_sc"], Y_nd * params["Y_sc"], LAB_nd * params["LAB_sc"]
-    AAB, O2, T = AAB_nd * params["AAB_sc"], O2_nd * params["O2_sc"], T_nd * params["T_sc"]
+    AAB, O2, T, pH = AAB_nd * params["AAB_sc"], O2_nd * params["O2_sc"], T_nd * params["T_sc"], pH_nd * params["pH_sc"]
+    H = pow(10, -pH)
 
     # To prevent concentrations going below zero
-    Glc = sym.Max(Glc, 0.0)
-    O2 = sym.Max(O2, 0.0)
-
-    # Algebraic unknowns
-    pH_nd = sym.symbols("pH", real=True)
-    pH = pH_nd * params["pH_sc"]
-
-    # Algebraic equations
-    g_1 = pH_RHS(pH, Cit, Ac, LA, params)
+    Glc = max(Glc, 0.0)
+    O2 = max(O2, 0.0)
 
     # Setting up differential equations
 
@@ -159,24 +186,23 @@ def setup_system(params):
     # 2. Calculate Mortality & Decay Rates
     T_Kelvin = T + 273.15
 
-    k_Y = params['k_Y'] * sym.exp(-params['E_a_k_Y'] / (params['R'] * T_Kelvin))
-    k_LAB = params['k_LAB'] * sym.exp(-params['E_a_k_LAB'] / (params['R'] * T_Kelvin))
-    k_AAB = params['k_AAB'] * sym.exp(-params['E_a_k_AAB'] / (params['R'] * T_Kelvin))
+    k_Y = params['k_Y'] * np.exp(-params['E_a_k_Y'] / (params['R'] * T_Kelvin))
+    k_LAB = params['k_LAB'] * np.exp(-params['E_a_k_LAB'] / (params['R'] * T_Kelvin))
+    k_AAB = params['k_AAB'] * np.exp(-params['E_a_k_AAB'] / (params['R'] * T_Kelvin))
 
     v6 = Y * EtOH * k_Y
     v7 = LAB * LA * k_LAB
     v8 = AAB * (Ac**2) * k_AAB
 
-    rate_d1 = params['b_E0'] + params['b_E1'] * sym.exp(-params['Delta_H_EtOH'] / (params['R'] * T_Kelvin))
+    rate_d1 = params['b_E0'] + params['b_E1'] * np.exp(-params['Delta_H_EtOH'] / (params['R'] * T_Kelvin))
     d1 = rate_d1 * EtOH
 
     d2 = params['b_LA'] * LA
 
-    rate_d3 = params['b_AC0'] + params['b_AC1'] * sym.exp(-params['Delta_H_Ac'] / (params['R'] * T_Kelvin))
+    rate_d3 = params['b_AC0'] + params['b_AC1'] * np.exp(-params['Delta_H_Ac'] / (params['R'] * T_Kelvin))
     d3 = rate_d3 * Ac
 
     # ODEs
-    dtau = 1 / params['tau_sc']
     dGlc = (- params['Y_Glc_Y'] * v1 - params['Y_Glc_LAB'] * v3) / params['Glc_sc']
     dFru = (- params['Y_Fru_Y'] * v2 - params['Y_Fru_LAB'] * v9) / params['Fru_sc']
     dCit = (- params['Y_Cit_LAB'] * v12) / params['Cit_sc']
@@ -193,66 +219,46 @@ def setup_system(params):
     dLAB = (v3 + v9 + v12 - v7) / params['LAB_sc']
     dAAB = (v4 + v5 + v11 - v8) / params['AAB_sc']
 
-    dO2 = ((params['A_max'] / (1 + sym.exp(-(tau - params['t_aer'])))) * (params['C_air'] - O2)
+    dO2 = ((params['A_max'] / (1 + np.exp(-(t - params['t_aer'])))) * (params['C_air'] - O2)
            - v4 - v5 - v11) / params['O2_sc']
 
     T_e_range = params['T_e_max'] - params['T_e_min']
-    T_e = T_e_range / 2 * sym.cos(sym.pi * tau / 12) + (params['T_e_max'] - T_e_range / 2)
+    T_e = T_e_range / 2 * np.cos(np.pi * t / 12) + (params['T_e_max'] - T_e_range / 2)
 
     dT = (
-            params['Y_Q_Glc'] * (params['Y_Glc_Y'] * v1 + params['Y_Glc_LAB'] * v3) +
-            params['Y_Q_Fru'] * (params['Y_Fru_Y'] * v2) +
-            params['Y_Q_EtOH'] * (params['Y_EtOH_AAB'] * v4) +
-            params['Y_Q_LA'] * (params['Y_LA_AAB'] * v5) -
-            params['Q_L'] * (T - T_e)
-    ) / params['T_sc']
-    # Solve for the nondimensional states
-    _x_list = [tau_nd, Glc_nd, Fru_nd, Cit_nd, EtOH_nd, LA_nd, Ac_nd, Y_nd, LAB_nd, AAB_nd, O2_nd, T_nd]
-    _f_list = [dtau, dGlc, dFru, dCit, dEtOH, dLA, dAc, dY, dLAB, dAAB, dO2, dT]
-    _g_list = [g_1]
-    _y_ini_list = [pH_nd]
-    _y_run_list = [pH_nd]
+                 params['Y_Q_Glc'] * (params['Y_Glc_Y'] * v1 + params['Y_Glc_LAB'] * v3) +
+                 params['Y_Q_Fru'] * (params['Y_Fru_Y'] * v2) +
+                 params['Y_Q_EtOH'] * (params['Y_EtOH_AAB'] * v4) +
+                 params['Y_Q_LA'] * (params['Y_LA_AAB'] * v5) -
+                 params['Q_L'] * (T - T_e)
+         ) / params['T_sc']
 
-    return _x_list, _f_list, _g_list, _y_ini_list, _y_run_list
+    dH = (H_numerator(H, dCit, dAc, dLA, params) / H_denominator(H, Cit, Ac, LA, params))
+    dpH = - dH / (H * np.log(10)) / params['pH_sc']
+
+    return [dGlc, dFru, dCit, dEtOH, dLA, dAc, dY, dLAB, dAAB, dO2, dT, dpH]
 
 
-def build_model_pH_citric(params):
-    # Cation concentration (can be found from initial conditions on pH and Cit)
-    params["Cat"] = calculate_Cat(params['pH'], params['K_w'],
-                                  params['Cit'], params['M_Cit'], params['K_a1_Cit'],
-                                  params['K_a2_Cit'], params['K_a3_Cit'])
-    sym_params = {k: sym.Symbol(k, real=True) for k in params.keys()}
-    x_list, f_list, g_list, y_ini_list, y_run_list = setup_system(sym_params)
+def run_model_ODE(params, initial_conditions, t_end, Dt=1e-2):
+    """Runs the model.
 
-    u_ini_dict = {}
-    u_run_dict, h_dict = {}, {}
-
-    # pydae solver
-    sys_dict = {"name": "fermenting_pulp", "params_dict": params, "f_list": f_list, "g_list": g_list, "x_list": x_list,
-                "y_ini_list": y_ini_list, "y_run_list": y_run_list, "u_ini_dict": u_ini_dict,
-                "u_run_dict": u_run_dict, "h_dict": h_dict}
-    Builder(sys_dict, target="ctypes", sparse=False).build()
-    # Initialise model
-    return Model("fermenting_pulp")
-
-
-def run_model_pH_citric(model, params, initial_conditions, t_end, Dt=1e-2):
-    """Runs the model after building.
-
-    :param model: The pydae model.
     :param params: Parameters on a standard scale.
     :param initial_conditions: The initial conditions for the system.
     :param t_end: The final timepoint.
     :param Dt: The timestep the solver uses.
     :return: The underlying model.
     """
-    model.Dt = Dt
-    model.decimation = 10
-    with contextlib.redirect_stdout(io.StringIO()):
-        model.ini(params, xy_0=initial_conditions)
-    # model.ini(params, xy_0=initial_conditions)
-
-    # Run model
-    model.run(t_end, {})
-    model.post()
-    return model
+    t_span = (0, t_end)
+    t_eval = np.arange(t_span[0], t_span[1], Dt)
+    params_numba = Dict.empty(key_type=types.string, value_type=types.float64)
+    for k, v in params.items():
+        params_numba[k] = v
+    sol = si.solve_ivp(fun=system,
+                       t_span=t_span,
+                       t_eval=t_eval,
+                       y0=initial_conditions,
+                       args=(params_numba,),
+                       method='RK45',
+                       rtol=1e-4,
+                       atol=1e-6)
+    return sol

@@ -12,7 +12,7 @@ from fermenting_cocoa.scripts import run_model_pH_citric
 
 
 plt.rcParams['text.usetex'] = True
-trial = "initial"
+trial = "camu2007"
 res_dir = f"../../resources/{trial}/pH_T_O2_citric"
 
 
@@ -75,7 +75,7 @@ def extract_data_from_model(_times, _model, _short_labels, _scales):
 
 
 def plot_all_profiles(_times, _df, _colours, _short_labels, _labels, _scales, _T_e,
-                      _fig=None, _axs=None, _linestyle="solid"):
+                      _fig=None, _axs=None, _linestyle="solid", _style="line"):
     """Plots the profiles for a given set of data and timepoints.
     """
     nrows, ncols = 4, 3
@@ -83,22 +83,33 @@ def plot_all_profiles(_times, _df, _colours, _short_labels, _labels, _scales, _T
         _fig, _axs = plt.subplots(nrows, ncols, figsize=(10, 12), sharex=True)
     plt.subplots_adjust(wspace=0.4, hspace=0.4)
     for i in range(11):
+        if _short_labels[i] not in _df:
+            continue
         ax = _axs[i//ncols, i%ncols]
         ax.set_title(_labels[i])
         ax.set_xlabel('Time [h]')
         ax.ticklabel_format(axis='y', style='sci', scilimits=(-2, 5))
 
         if labels[i] == 'Temperature':
-            ax.plot(_times, _df[_short_labels[i]], color=_colours[i], label='Pulp', linestyle=_linestyle)
+            if _style == "scatter":
+                ax.scatter(_times, _df[_short_labels[i]], color=_colours[i], label='Pulp', marker='x')
+            else:
+                ax.plot(_times, _df[_short_labels[i]], color=_colours[i], label='Pulp', linestyle=_linestyle)
             ax.set_ylabel('°C')
             ax.plot(_times, _T_e, color=_colours[i], label='Ambient', linestyle='dotted', lw=0.5)
             ax.legend()
         else:
-            ax.plot(_times, _df[_short_labels[i]], color=_colours[i], linestyle=_linestyle)
+            if _style == "scatter":
+                ax.scatter(_times, _df[_short_labels[i]], color=_colours[i], marker='x')
+            else:
+                ax.plot(_times, _df[_short_labels[i]], color=_colours[i], linestyle=_linestyle)
             ax.set_ylabel('mg g(pulp)\\textsuperscript{-1}')
 
     ax_pH = _axs[nrows-1, ncols-1]
-    ax_pH.plot(_times, _df["pH"], color=_colours[-1], linestyle=_linestyle)
+    if _style == "scatter":
+        ax_pH.scatter(_times, _df["pH"], color=_colours[-1], marker='x')
+    else:
+        ax_pH.plot(_times, _df["pH"], color=_colours[-1], linestyle=_linestyle)
     ax_pH.set_title(labels[-1])
     ax_pH.set_xlabel('Time [h]')
     return _fig, _axs
@@ -109,20 +120,25 @@ model = build_model_pH_citric(params)
 model = run_model_pH_citric(model, params, initial_conditions_nd, t_end)
 default_params_df = extract_data_from_model(times, model, short_labels, scales)
 
-# Creating the noisy data
-n_time_rec = 30
-times_rec = np.linspace(0, t_end, n_time_rec, dtype=int)
+# # Creating the noisy data
+# n_time_rec = 30
+# times_rec = np.linspace(0, t_end, n_time_rec, dtype=int)
 
-noise_scale = 0.01
-std_devs = {short_label: scales[f"{short_label}_sc"] * noise_scale for short_label in short_labels}
-noise = {short_label: np.random.normal(0, std_devs[short_label], n_time_rec) for short_label in short_labels}
-noisy_df = pd.DataFrame(columns=short_labels)
-for short_label in short_labels:
-    noisy_df[short_label] = default_params_df[short_label].to_numpy()[times_rec] + noise[short_label]
+# noise_scale = 0.01
+# std_devs = {short_label: scales[f"{short_label}_sc"] * noise_scale for short_label in short_labels}
+# noise = {short_label: np.random.normal(0, std_devs[short_label], n_time_rec) for short_label in short_labels}
+# noisy_df = pd.DataFrame(columns=short_labels)
+# for short_label in short_labels:
+#     noisy_df[short_label] = default_params_df[short_label].to_numpy()[times_rec] + noise[short_label]
 
-# Saving the noisy data in a .csv file
-noisy_df.to_csv(f"{res_dir}/noisy_data.csv")
-    
+# # Saving the noisy data in a .csv file
+# noisy_df.to_csv(f"{res_dir}/noisy_data.csv")
+
+# Reading in the experimental data
+data_name = "camu_2007_data"
+experimental_data_df = pd.read_csv(f"{res_dir}/experimental_data/{data_name}.csv")
+times_rec = experimental_data_df["Time"].to_numpy()
+
 # Creating the problem and specifying the error measure
 
 
@@ -139,6 +155,8 @@ class Problem:
         self._short_labels = _short_labels
         self._scales = _scales
         self._data_df = _data_df
+        self._mins = {label: np.min(_data_df[label]) for label in _short_labels if label in _data_df}
+        self._maxes = {label: np.max(_data_df[label]) for label in _short_labels if label in _data_df}
         self._param_info = _param_info # dict keyed by param name with value "lin" if not log-transformed and "log" if log-transformed
         self._fixed_params = _fixed_params # dict for all the fixed parameter values of the model
 
@@ -156,8 +174,8 @@ class Problem:
         sse = 0
         for short_label in self._short_labels:
             if short_label in self._data_df:
-                scale = self._scales[f"{short_label}_sc"]
-                error = np.sum((_model_df[short_label] - self._data_df[short_label]) ** 2) / (scale ** 2)
+                q_range = self._maxes[short_label] - self._mins[short_label]
+                error = np.sum((_model_df[short_label] - self._data_df[short_label]) ** 2) / (q_range ** 2)
                 sse += error
         return sse
 
@@ -179,40 +197,29 @@ var_params_morris = {param: params[param] for param in params if param not in fi
 
 # We log-transform the problem to help with convergence
 param_info_morris = {param_name: "log" for param_name in var_params_morris}
-problem_morris = Problem(model, initial_conditions_nd, t_end, times_rec, short_labels, scales, noisy_df, param_info_morris, fixed_params_morris)
+problem_morris = Problem(model, initial_conditions_nd, t_end, times_rec, short_labels, scales, experimental_data_df, param_info_morris, fixed_params_morris)
 log_var_params = {param: np.log10(params[param]) for param in var_params_morris}
 param_arr = np.array(list(log_var_params.values()))
 
 # Parameter bounds
-bounds = {"mu_max_Y_Glc": [-1, -0.1], "mu_max_Y_Fru": [-2, -0.1], "mu_max_Y_LA": [-2, -0.1], "mu_max_LAB_Glc": [-3, -0.5],
-          "mu_max_LAB_Fru": [-2, -0.4], "mu_max_AAB_EtOH": [-1, -0.1], "mu_max_AAB_LA": [-3, -1.2], "mu_max_AAB_Ac": [-3, -0.2],
-          "K_Glc_Y": [-4, 1.9], "K_Fru_Y": [0.9, 2.1], "K_LA_Y": [0.5, 1.9], "K_Glc_LAB": [-0.5, 2.1], "K_Fru_LAB": [0.8, 1.9],
-          "K_EtOH_AAB": [0.6, 1.5], "K_LA_AAB": [2, 3.7], "K_Ac_AAB": [-1, 1.4],
-          "k_Y": [-1.8, -1.2], "k_LAB": [-2.6, -1.8], "k_AAB": [-3.5, -1.7],
-          "Y_Glc_Y": [1, 1.9], "Y_Glc_LAB": [0.5, 1.9], "Y_Fru_Y": [1, 1.9], "Y_Fru_LAB": [1, 2], "Y_EtOH_Y_Glc": [-0.5, 1.3], "Y_EtOH_Y_Fru": [-0.5, 1.2],
-          "Y_EtOH_LAB_Glc": [0, 1.4], "Y_EtOH_LAB_Fru": [-0.5, 1.4], "Y_EtOH_AAB": [2, 3.5], "Y_LA_LAB_Glc": [0, 1.2], "Y_LA_LAB_Fru": [0.2, 1.2],
-          "Y_LA_AAB": [0, 3.7], "Y_Ac_LAB_Glc": [-0.5, 0.6], "Y_Ac_LAB_Fru": [-0.5, 1], "Y_EtOH_Y_LA": [-0.5, 1.3], "Y_Ac_AAB_EtOH": [1, 2.4],
-          "Y_Ac_AAB_LA": [2, 3.5], "Y_Ac_Y_Glc": [-0.5, 0.3], "Y_Ac_Y_Fru": [-0.5, 0.4], "Y_LA_Y": [0, 1], "Y_Ac_AAB": [2, 3.5],
-          # Below here are new parameters. Therefore, the bounds are more educated guesses
-          "Q_L": [-4, 0], "Y_Q_Glc": [-2, 0], "Y_Q_Fru": [-2, 0], "Y_Q_EtOH": [-1, 1], "Y_Q_LA": [-2, 0],
-          "K_O2_EtOH": [-4, -2.1], "K_O2_LA": [-4, -2.1], "K_O2_Ac": [-4, -2.1], "A_max": [-1, 1], "t_aer": [1.4, 1.9],
-          "b_LA": [-3, -1], "b_E0": [-4, -2], "b_E1": [0, 2], "b_AC0": [-4, -2], "b_AC1": [0, 2],
-          "mu_max_LAB_Cit": [-2, -0.1], "K_Cit_LAB": [0.3, 0.9], "Y_Cit_LAB": [0, 1.9], "Y_LA_LAB_Cit": [0, 1.2], "Y_Ac_LAB_Cit": [-0.5, 0.8]}
+bounds_file = open(f"{res_dir}/bounds.json")
+bounds_tiered = json.load(bounds_file)
+bounds = flatten_json(bounds_tiered)
 
 # Now we can setup the Morris screening
 sort_dict = lambda _dict: {k: v for k, v in sorted(_dict.items(), key=lambda item: item[1], reverse=True)}
 
 meta_info = {
-    "num_vars": 60,
+    "num_vars": 63,
     "names": list(param_info_morris.keys()),
-    "bounds": [bound_list for bound_list in bounds.values()]
+    "bounds": [bounds[name] for name in param_info_morris.keys()]
 }
 
 from SALib.sample.morris import sample
 from SALib.analyze.morris import analyze
 
 # Here we run Morris a number of times and compare rankings at the end
-n_morris = 8
+n_morris = 16
 N = 100
 param_values_all = []
 for j in range(n_morris):
@@ -237,7 +244,7 @@ def init_worker(cf):
     global PROBLEM
     MODEL = build_model_pH_citric(params)
     PROBLEM = Problem(MODEL, cf["initial_conditions_nd"], cf["t_end"], cf["times_rec"], cf["short_labels"], cf["scales"], 
-                      cf["noisy_df"], cf["param_info_morris"], cf["fixed_params_morris"])
+                      cf["data_df"], cf["param_info_morris"], cf["fixed_params_morris"])
 
 
 def eval_sse(args):
@@ -248,7 +255,10 @@ def eval_sse(args):
         y = PROBLEM.sse(params)
     except RuntimeError:
         print(f"Convergence error at It {i}, increasing resolution...")
-        y = PROBLEM.sse(params, Dt=1e-3)
+        try:
+            y = PROBLEM.sse(params, Dt=1e-3)
+        except RuntimeError:
+            y = 1e4
 
     return i, y
 
@@ -266,7 +276,7 @@ if __name__ == "__main__":
             "times_rec": times_rec,
             "short_labels": short_labels,
             "scales": scales,
-            "noisy_df": noisy_df,
+            "data_df": experimental_data_df,
             "param_info_morris": param_info_morris,
             "fixed_params_morris": fixed_params_morris
         }
@@ -301,6 +311,19 @@ for j in range(n_morris):
     param_values = param_values_all[j]
     Si = analyze(meta_info, param_values, Y, conf_level=0.95, print_to_console=False)
     Si_list.append(Si)
+
+# Finding the best results
+num_best_its = 5
+for k in range(num_best_its):
+    fig, axs = plot_all_profiles(times_rec, experimental_data_df, colours, short_labels, labels, scales, experimental_data_df["T_ext"],
+                                 _style="scatter")
+    j = np.argmin(Y_all)
+    n_its = len(Y_all[0])
+    print(problem_morris.sse(param_values_all[j//n_its][j%n_its], Dt=1e-3))
+    output_df = extract_data_from_model(times, problem_morris._model_out, short_labels, scales)
+    fig, axs = plot_all_profiles(times, output_df, colours, short_labels, labels, scales, T_e, _fig=fig, _axs=axs)
+    fig.savefig(f"{res_dir}/morris/morris_traces_{k}.png")
+    Y_all[j//n_its][j%n_its] = 1e6
 
 morris_df_all = pd.DataFrame(columns=["name"] + [f"mu_star_{j}" for j in range(n_morris)] + [f"sigma_{j}" for j in range(n_morris)])
 

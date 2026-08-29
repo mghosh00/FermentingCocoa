@@ -3,8 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
-from fermenting_cocoa.scripts import run_model_pH_citric
-from fermenting_cocoa.scripts import build_model_pH_citric
+from fermenting_cocoa.scripts import run_model_ODE
 
 plt.rcParams['text.usetex'] = True
 
@@ -40,16 +39,16 @@ param_file = open(f"resources/{trial}/pH_T_O2_citric/params.json")
 params_json = json.load(param_file)
 params = flatten_json(params_json)
 
-initial_conditions = params_json["initial_conditions"]
+initial_conditions = list(params_json["initial_conditions"].values())[1:]
 
 # These scales are roughly the maximum sizes for each species. The solver uses
 # nondimensional quantities, as these are easier to use Bayesian inference with
-scales = params_json["scales"]
-short_labels = list(initial_conditions.keys())[1:]
+scales = list(params_json["scales"].values())[1:]
+short_labels = list(params_json["initial_conditions"].keys())[1:]
 
 # Scaling initial conditions
-initial_conditions_nd = {k: initial_conditions[k] / scales[f"{k}_sc"]
-                         for k in initial_conditions.keys()}
+initial_conditions_nd = [initial_conditions[j] / scales[j]
+                         for j in range(len(short_labels))]
 
 
 def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
@@ -65,21 +64,13 @@ def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
     return Cat
 
 
-# Cation concentration in pulp (not including H+). We treat this as a constant.
-Cat_0 = calculate_Cat(params['pH_initial'], params['K_w'], initial_conditions['Cit'], params['M_Cit'],
-                      params['K_a1_Cit'], params['K_a2_Cit'], params['K_a3_Cit'])
-# Cat_0 = 0.05
-params['Cat'] = Cat_0
-print("Cat_0: ", Cat_0)
-
 t_end = 168
 
 # Run model
-model = build_model_pH_citric(params)
 start = time.time()
 for i in range(1000):
     verbose = i % 10 == 0
-    model = run_model_pH_citric(model, params, initial_conditions_nd, t_end)
+    sol = run_model_ODE(params, initial_conditions_nd, t_end, Dt=1e-2)
     if verbose:
         print(f"It {i}: {time.time() - start}")
 
@@ -95,7 +86,7 @@ colors = ['blue', 'orange', 'darkgoldenrod', 'green', 'red', 'purple',
           'brown', 'pink', 'gray', 'cyan', 'black', 'darkviolet']
 
 times = np.linspace(0, t_end, t_end + 1)
-q_hourly = lambda symbol: np.interp(times, model.Time, model.get_values(symbol)) * scales[f"{symbol}_sc"]
+q_hourly = lambda symbol: np.interp(times, sol.t, sol.y[short_labels.index(symbol)]) * scales[short_labels.index(symbol)]
 
 # Calculating ambient temperature
 T_e_range = params['T_e_max'] - params['T_e_min']
@@ -121,4 +112,4 @@ ax_pH.plot(times, q_hourly("pH"), color=colors[-1])
 ax_pH.set_title(labels[-1])
 ax_pH.set_xlabel('Time [h]')
 
-fig.savefig(f'resources/{trial}/pH_T_O2_citric/time_traces_pydae.png', bbox_inches='tight', dpi=400)
+fig.savefig(f'resources/{trial}/pH_T_O2_citric/time_traces_ode.png', bbox_inches='tight', dpi=400)
