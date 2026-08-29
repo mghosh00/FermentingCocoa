@@ -239,7 +239,8 @@ def system(t, states, params):
     return [dGlc, dFru, dCit, dEtOH, dLA, dAc, dY, dLAB, dAAB, dO2, dT, dpH]
 
 
-def run_model_ODE(params, initial_conditions, t_end, Dt=1e-2):
+def run_model_ODE(params, initial_conditions, t_end, Dt=1e-2,
+                  rtol=1e-4, atol=1e-6):
     """Runs the model.
 
     :param params: Parameters on a standard scale.
@@ -259,6 +260,6 @@ def run_model_ODE(params, initial_conditions, t_end, Dt=1e-2):
                        y0=initial_conditions,
                        args=(params_numba,),
                        method='RK45',
-                       rtol=1e-4,
-                       atol=1e-6)
+                       rtol=rtol,
+                       atol=atol)
     return sol
