@@ -11,7 +11,7 @@ plt.rcParams['text.usetex'] = True
 trial = "initial"
 
 
-@njit(nopython=True)
+@njit
 def calculate_mu_T(T, mu_opt, T_min, T_opt, T_max):
     """
     Calculates the temperature-adjusted specific growth rate using the
@@ -29,7 +29,7 @@ def calculate_mu_T(T, mu_opt, T_min, T_opt, T_max):
     return mu_T
 
 
-@njit(nopython=True)
+@njit
 def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     """
     Calculates the effect pH has on the reaction rate using the cardinal
@@ -44,7 +44,7 @@ def calculate_mu_pH(pH, pH_min, pH_opt, pH_max):
     return mu_pH
 
 
-@njit(nopython=True)
+@njit
 def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
     """
     Calculates the concentration of cations (K+, Na+, etc.) at the beginning of the simulation
@@ -58,7 +58,7 @@ def calculate_Cat(pH, K_w, Cit, M_cit, K_a1_cit, K_a2_cit, K_a3_cit):
     return Cat
 
 
-@njit(nopython=True)
+@njit
 def pH_RHS(_pH, _Cit, _Ac, _LA, params):
 
     _H = pow(10, -_pH)
@@ -79,14 +79,14 @@ def pH_RHS(_pH, _Cit, _Ac, _LA, params):
     return eq
 
 
-@njit(nopython=True)
+@njit
 def dCat_dt(params):
     """The derivative of the concentration of cations as a function of time.
     """
     return 0.0
 
 
-@njit(nopython=True)
+@njit
 def H_numerator(_H, _dCit, _dAc, _dLA, _params):
     Cit_sc, Ac_sc, LA_sc = _params["Cit_sc"], _params["Ac_sc"], _params["LA_sc"]
     M_Cit, K_a1_cit, K_a2_cit, K_a3_cit = _params["M_Cit"], _params["K_a1_Cit"], _params["K_a2_Cit"], _params["K_a3_Cit"]
@@ -100,7 +100,7 @@ def H_numerator(_H, _dCit, _dAc, _dLA, _params):
     return term1 + term2 + term3 + term4
 
 
-@njit(nopython=True)
+@njit
 def H_denominator(_H, _Cit, _Ac, _LA, _params):
     K_w = _params["K_w"]
     M_Cit, K_a1_cit, K_a2_cit, K_a3_cit = _params["M_Cit"], _params["K_a1_Cit"], _params["K_a2_Cit"], _params["K_a3_Cit"]
@@ -116,7 +116,7 @@ def H_denominator(_H, _Cit, _Ac, _LA, _params):
     return term1 + term2 + term3 + term4
 
 
-@njit(nopython=True)
+@njit
 def system(t, states, params):
     """
     Computes the derivatives for the FULL cocoa bean fermentation model,
@@ -229,7 +229,8 @@ def system(t, states, params):
                  params['Y_Q_Glc'] * (params['Y_Glc_Y'] * v1 + params['Y_Glc_LAB'] * v3) +
                  params['Y_Q_Fru'] * (params['Y_Fru_Y'] * v2) +
                  params['Y_Q_EtOH'] * (params['Y_EtOH_AAB'] * v4) +
-                 params['Y_Q_LA'] * (params['Y_LA_AAB'] * v5) -
+                 params['Y_Q_LA'] * (params['Y_LA_AAB'] * v5) +
+                 params['Y_Q_Ac'] * (params['Y_Ac_AAB'] * v11) -
                  params['Q_L'] * (T - T_e)
          ) / params['T_sc']
 
